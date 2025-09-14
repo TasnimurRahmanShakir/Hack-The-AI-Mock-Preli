@@ -175,3 +175,85 @@ async def update_member(member_id: int, update: MemberUpdate):
     if update.age:
         members[member_id]["age"] = update.age
     return members[member_id]
+
+# Q5:
+@app.post("/api/borrow", response_model=Dict[str, Union[int, str]])
+async def borrow_book(req: BorrowRequest):
+    if req.member_id not in members:
+        raise HTTPException(404, detail={"message": f"member with id: {req.member_id} was not found"})
+    if req.book_id not in books:
+        raise HTTPException(404, detail={"message": f"book with id: {req.book_id} was not found"})
+    if find_active_borrow(req.member_id):
+        raise HTTPException(400, detail={"message": f"member with id: {req.member_id} has already borrowed a book"})
+    if not books[req.book_id]["is_available"]:
+        raise HTTPException(400, detail={"message": f"book with id: {req.book_id} is not available"})
+    
+    borrowed_at = datetime.utcnow()
+    due_date = calculate_due_date(borrowed_at)
+    transaction = {
+        "transaction_id": get_next_transaction_id(),
+        "member_id": req.member_id,
+        "book_id": req.book_id,
+        "borrowed_at": borrowed_at,
+        "returned_at": None,
+        "status": "active",
+        "due_date": due_date
+    }
+    transactions.append(transaction)
+    members[req.member_id]["has_borrowed"] = True
+    books[req.book_id]["is_available"] = False
+    return {k: v.isoformat() if isinstance(v, datetime) else v for k, v in transaction.items()}
+
+# Q6: 
+@app.post("/api/return", response_model=Dict[str, Union[int, str]])
+async def return_book(req: ReturnRequest):
+    active = next((t for t in transactions if t["member_id"] == req.member_id and t["book_id"] == req.book_id and t["status"] == "active"), None)
+    if not active:
+        raise HTTPException(400, detail={"message": f"member with id: {req.member_id} has not borrowed book with id: {req.book_id}"})
+    
+    returned_at = datetime.utcnow()
+    active["returned_at"] = returned_at
+    active["status"] = "returned"
+    members[req.member_id]["has_borrowed"] = False
+    books[req.book_id]["is_available"] = True
+    return {k: v.isoformat() if isinstance(v, datetime) else v for k, v in active.items()}
+
+# Q7: 
+@app.get("/api/borrowed", response_model=Dict[str, List[BorrowedBook]])
+async def list_borrowed():
+    borrowed = []
+    for t in transactions:
+        if t["status"] == "active":
+            borrowed.append({
+                "transaction_id": t["transaction_id"],
+                "member_id": t["member_id"],
+                "member_name": members[t["member_id"]]["name"],
+                "book_id": t["book_id"],
+                "book_title": books[t["book_id"]]["title"],
+                "borrowed_at": t["borrowed_at"].isoformat(),
+                "due_date": t["due_date"].isoformat()
+            })
+    return {"borrowed_books": borrowed}
+
+# Q8: Get Borrowing History
+@app.get("/api/members/{member_id}/history", response_model=MemberHistory)
+async def get_history(member_id: int):
+    if member_id not in members:
+        raise HTTPException(404, detail={"message": f"member with id: {member_id} was not found"})
+    history = []
+    for t in transactions:
+        if t["member_id"] == member_id:
+            history.append({
+                "transaction_id": t["transaction_id"],
+                "book_id": t["book_id"],
+                "book_title": books[t["book_id"]]["title"] if t["book_id"] in books else "Unknown",
+                "borrowed_at": t["borrowed_at"].isoformat(),
+                "returned_at": t["returned_at"].isoformat() if t["returned_at"] else None,
+                "status": t["status"]
+            })
+    return {
+        "member_id": member_id,
+        "member_name": members[member_id]["name"],
+        "borrowing_history": history
+    }
+
